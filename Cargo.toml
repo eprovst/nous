@@ -1,0 +1,11 @@
+[package]
+name = "nous"
+version = "0.1.0"
+authors = ["Evert Provoost <evert@eprovst.net>"]
+description = "νοῦς makes your plain text knowledge base more useful"
+repository = "https://github.com/eprovst/nous"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.21", features = ["derive"] }
+walkdir = "2"
