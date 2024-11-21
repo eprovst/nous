@@ -1,6 +1,7 @@
 use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
 use pathdiff::diff_paths;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::SystemTime;
 use std::{env, fs};
 use walkdir::{DirEntry, WalkDir};
@@ -8,6 +9,7 @@ use walkdir::{DirEntry, WalkDir};
 const ROOT_DIR_NAME: &str = ".nous";
 const DEFAULT_EXT: &str = "md";
 const SUPPORTED_EXTS: [&str; 5] = ["md", "markdown", "org", "txt", "text"];
+const FALLBACK_EDITOR: &str = if cfg!(windows) { "Notepad" } else { "vi" };
 
 #[derive(Parser)]
 #[command(name = "nous")]
@@ -96,7 +98,7 @@ fn main() {
             Commands::Fl { node: _ } => todo!(),
             Commands::Mv { from: _, to: _ } => todo!(),
             Commands::Rm { node } => remove_node(&root, &node),
-            Commands::Edit { node: _ } => todo!(),
+            Commands::Edit { node } => edit_node(&root, &node),
             Commands::Touch { node } => touch_node(&root, &node),
             Commands::Path { node, absolute } => path_to_node(&root, &node, *absolute),
             Commands::Ls => list_nodes(&root),
@@ -245,6 +247,19 @@ fn touch_node(root: &Path, node: &String) {
     } else {
         eprintln!("warning: node name results in an invalid file, skipping.")
     }
+}
+
+fn edit_node(root: &Path, node: &String) {
+    // TODO: handle errors, and check for fast return
+    let path = find_node_once(root, node).unwrap_or(default_file_name(root, node));
+    let editor = env::var("VISUAL").unwrap_or(env::var("EDITOR").unwrap_or(FALLBACK_EDITOR.into()));
+    let mut editor_args = editor.split_whitespace();
+    let _ = Command::new(editor_args.next().unwrap())
+        .args(editor_args)
+        .arg(path.to_str().unwrap())
+        .spawn()
+        .map(|mut c| c.wait())
+        .unwrap();
 }
 
 fn remove_node(root: &Path, node: &String) {
