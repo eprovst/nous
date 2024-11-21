@@ -2,7 +2,7 @@ use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
 use pathdiff::diff_paths;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use std::{env, fs};
 use walkdir::{DirEntry, WalkDir};
 
@@ -40,6 +40,9 @@ enum Commands {
     Edit {
         /// Node to edit
         node: String,
+        /// Editor to use
+        #[arg(short, long)]
+        editor: Option<String>,
     },
 
     /// List nodes which this node links to
@@ -98,7 +101,7 @@ fn main() {
             Commands::Fl { node: _ } => todo!(),
             Commands::Mv { from: _, to: _ } => todo!(),
             Commands::Rm { node } => remove_node(&root, &node),
-            Commands::Edit { node } => edit_node(&root, &node),
+            Commands::Edit { node, editor } => edit_node(&root, &node, editor.into()),
             Commands::Touch { node } => touch_node(&root, &node),
             Commands::Path { node, absolute } => path_to_node(&root, &node, *absolute),
             Commands::Ls => list_nodes(&root),
@@ -249,17 +252,47 @@ fn touch_node(root: &Path, node: &String) {
     }
 }
 
-fn edit_node(root: &Path, node: &String) {
-    // TODO: handle errors, and check for fast return
+fn edit_node(root: &Path, node: &String, editor: Option<&String>) {
     let path = find_node_once(root, node).unwrap_or(default_file_name(root, node));
-    let editor = env::var("VISUAL").unwrap_or(env::var("EDITOR").unwrap_or(FALLBACK_EDITOR.into()));
+
+    let editor = editor
+        .cloned()
+        .or_else(|| env::var("VISUAL").ok())
+        .or_else(|| env::var("EDITOR").ok())
+        .unwrap_or(FALLBACK_EDITOR.into());
     let mut editor_args = editor.split_whitespace();
-    let _ = Command::new(editor_args.next().unwrap())
+
+    let start_time = Instant::now();
+    let result = Command::new(editor_args.next().unwrap_or(FALLBACK_EDITOR))
         .args(editor_args)
-        .arg(path.to_str().unwrap())
+        .arg(path)
         .spawn()
-        .map(|mut c| c.wait())
-        .unwrap();
+        .and_then(|mut c| c.wait());
+
+    match result {
+        Ok(code) => {
+            if !code.success() {
+                eprintln!("warning: editor did not exit successfully.")
+            }
+        }
+        Err(_) => {
+            let mut cmd = Cli::command();
+            cmd.find_subcommand_mut("edit")
+                .unwrap() // we know edit exists
+                .error(
+                    ErrorKind::Io,
+                    format!(
+                        "failed to launch '{}', consider using the --editor flag.",
+                        editor
+                    ),
+                )
+                .exit()
+        }
+    }
+
+    if start_time.elapsed() <= Duration::from_millis(100) {
+        eprintln!("warning: editor exited under 100ms, this might indicate failure; consider using the --editor flag.")
+    }
 }
 
 fn remove_node(root: &Path, node: &String) {
