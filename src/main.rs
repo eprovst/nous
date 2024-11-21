@@ -1,6 +1,7 @@
 use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
 use pathdiff::diff_paths;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use std::{env, fs};
 use walkdir::{DirEntry, WalkDir};
 
@@ -33,6 +34,12 @@ enum Commands {
         absolute: bool,
     },
 
+    /// Edit a node using the default editor
+    Edit {
+        /// Node to edit
+        node: String,
+    },
+
     /// List nodes which this node links to
     Fl {
         /// Node to show links of
@@ -59,9 +66,9 @@ enum Commands {
         node: String,
     },
 
-    /// Create a file for a new node
-    New {
-        /// Name of node to create
+    /// Touch the file of a (new) node
+    Touch {
+        /// Name of (new) node to touch
         node: String,
     },
 
@@ -89,7 +96,8 @@ fn main() {
             Commands::Fl { node: _ } => todo!(),
             Commands::Mv { from: _, to: _ } => todo!(),
             Commands::Rm { node } => remove_node(&root, &node),
-            Commands::New { node } => new_node(&root, &node),
+            Commands::Edit { node: _ } => todo!(),
+            Commands::Touch { node } => touch_node(&root, &node),
             Commands::Path { node, absolute } => path_to_node(&root, &node, *absolute),
             Commands::Ls => list_nodes(&root),
             Commands::Root { absolute } => print_path(&root, *absolute),
@@ -108,7 +116,11 @@ fn main() {
 }
 
 fn current_dir() -> PathBuf {
-    env::current_dir().expect("error: failed to retrieve working directory.")
+    env::current_dir().unwrap_or_else(|_| {
+        let mut cmd = Cli::command();
+        cmd.error(ErrorKind::Io, "failed to retrieve working directory.")
+            .exit()
+    })
 }
 
 fn find_root(start_dir: &Path) -> Option<PathBuf> {
@@ -188,10 +200,6 @@ fn find_node(root: &Path, node: &String) -> impl Iterator<Item = PathBuf> {
     })
 }
 
-fn node_exists(root: &Path, node: &String) -> bool {
-    find_node(root, node).next().is_some()
-}
-
 fn find_node_once(root: &Path, node: &String) -> Option<PathBuf> {
     let mut matcher = find_node(root, node);
     let result = matcher.next();
@@ -215,28 +223,43 @@ fn default_file_name(root: &Path, node: &String) -> PathBuf {
     root.join(format!("{}.{}", node, DEFAULT_EXT))
 }
 
-fn new_node(root: &Path, node: &String) {
-    if node_exists(root, node) {
-        eprintln!("warning: node already exists, skipping creation.");
-    } else {
-        let file_name = default_file_name(root, node);
-        fs::OpenOptions::new()
+fn touch_node(root: &Path, node: &String) {
+    let path = find_node_once(root, node).unwrap_or(default_file_name(root, node));
+    if path.file_name().is_some() && path.parent().map_or(true, |p| p.is_dir()) {
+        let file = fs::OpenOptions::new()
             .create(true)
             .write(true)
-            .open(&file_name)
-            .expect(&format!(
-                "error: failed to create node at '{}'",
-                try_relative_path(&file_name).display()
-            ));
+            .open(&path)
+            .unwrap_or_else(|_| {
+                let mut cmd = Cli::command();
+                cmd.error(
+                    ErrorKind::Io,
+                    format!(
+                        "failed to touch file '{}'.",
+                        try_relative_path(&path).display()
+                    ),
+                )
+                .exit()
+            });
+        let _ = file.set_modified(SystemTime::now()); // not a problem if this fails
+    } else {
+        eprintln!("warning: node name results in an invalid file, skipping.")
     }
 }
 
 fn remove_node(root: &Path, node: &String) {
     if let Some(path) = find_node_once(root, node) {
-        fs::remove_file(&path).expect(&format!(
-            "error: failed to remove node at '{}'",
-            try_relative_path(&path).display()
-        ));
+        fs::remove_file(&path).unwrap_or_else(|_| {
+            let mut cmd = Cli::command();
+            cmd.error(
+                ErrorKind::Io,
+                format!(
+                    "failed to remove node at '{}'.",
+                    try_relative_path(&path).display()
+                ),
+            )
+            .exit()
+        });
     } else {
         eprintln!("warning: node does not exist, skipping removal.");
     }
@@ -253,14 +276,21 @@ fn init_realm(target: &Path) {
                     try_relative_path(&root).display()
                 ),
             )
-            .exit();
+            .exit()
         }
         None => {
             let rootdir = target.join(ROOT_DIR_NAME);
-            fs::create_dir_all(&rootdir).expect(&format!(
-                "error: failed to create realm root marker '{}'",
-                try_relative_path(&rootdir).display()
-            ))
+            fs::create_dir_all(&rootdir).unwrap_or_else(|_| {
+                let mut cmd = Cli::command();
+                cmd.error(
+                    ErrorKind::Io,
+                    format!(
+                        "failed to create realm root marker '{}'.",
+                        try_relative_path(&rootdir).display()
+                    ),
+                )
+                .exit()
+            })
         }
     }
 }
