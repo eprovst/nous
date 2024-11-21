@@ -1,6 +1,7 @@
 use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
-use std::fs;
+use pathdiff::diff_paths;
 use std::path::{Path, PathBuf};
+use std::{env, fs};
 use walkdir::{DirEntry, WalkDir};
 
 const ROOT_DIR_NAME: &str = ".nous";
@@ -25,14 +26,21 @@ enum Commands {
         root: String,
     },
 
-    /// List forwardlinks of a node
-    Bl {
-        /// Node to show forwardlinks of
+    /// Print root of this νοῦς realm
+    Root {
+        /// Print the absolute path
+        #[arg(short, long)]
+        absolute: bool,
+    },
+
+    /// List nodes which this node links to
+    Fl {
+        /// Node to show links of
         node: String,
     },
 
-    /// List backlinks of a node
-    Fl {
+    /// List nodes which link to this node
+    Bl {
         /// Node to collect backlinks of
         node: String,
     },
@@ -61,6 +69,9 @@ enum Commands {
     Path {
         /// Node to show path of
         node: String,
+        /// Print the absolute path
+        #[arg(short, long)]
+        absolute: bool,
     },
 
     /// List nodes in realm
@@ -72,28 +83,32 @@ fn main() {
 
     if let Commands::Init { root } = &cli.command {
         init_realm(Path::new(root));
-    } else if let Some(root) = find_root(Path::new(".")) {
+    } else if let Some(root) = find_root(&current_dir()) {
         match &cli.command {
             Commands::Bl { node: _ } => todo!(),
             Commands::Fl { node: _ } => todo!(),
             Commands::Mv { from: _, to: _ } => todo!(),
             Commands::Rm { node } => remove_node(&root, &node),
             Commands::New { node } => new_node(&root, &node),
-            Commands::Path { node } => path_to_node(&root, &node),
+            Commands::Path { node, absolute } => path_to_node(&root, &node, *absolute),
             Commands::Ls => list_nodes(&root),
+            Commands::Root { absolute } => print_path(&root, *absolute),
             Commands::Init { root: _ } => unreachable!(),
         }
     } else {
         let mut cmd = Cli::command();
         cmd.find_subcommand_mut("init")
-            // TODO: Deal with errors
-            .unwrap()
+            .unwrap() // we know init exists
             .error(
                 ErrorKind::Io,
                 "not within a νοῦς realm; you could use 'init' to create one.",
             )
             .exit();
     }
+}
+
+fn current_dir() -> PathBuf {
+    env::current_dir().expect("error: failed to retrieve working directory.")
 }
 
 fn find_root(start_dir: &Path) -> Option<PathBuf> {
@@ -106,15 +121,39 @@ fn find_root(start_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn is_hidden(entry: &DirEntry) -> bool {
-    entry
-        .file_name()
-        .to_str()
-        .map(|s| s.starts_with("."))
-        .unwrap_or(false)
+fn try_absolute_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or(path.to_path_buf())
+}
+
+fn try_relative_path(path: &Path) -> PathBuf {
+    if let Ok(apath) = path.canonicalize() {
+        match diff_paths(&apath, &current_dir()) {
+            Some(diff) if diff == Path::new("") => Path::new(".").to_path_buf(),
+            Some(diff) => diff,
+            None => apath,
+        }
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn print_path(path: &Path, absolute: bool) {
+    if absolute {
+        println!("{}", try_absolute_path(path).display())
+    } else {
+        println!("{}", try_relative_path(path).display())
+    }
 }
 
 fn realm_walker(root: &Path) -> impl Iterator<Item = PathBuf> {
+    fn is_hidden(entry: &DirEntry) -> bool {
+        entry
+            .file_name()
+            .to_str()
+            .map(|s| s.starts_with("."))
+            .unwrap_or(false)
+    }
+
     WalkDir::new(root)
         .follow_links(true)
         .into_iter()
@@ -165,9 +204,9 @@ fn find_node_once(root: &Path, node: &String) -> Option<PathBuf> {
     result
 }
 
-fn path_to_node(root: &Path, node: &String) {
+fn path_to_node(root: &Path, node: &String, absolute: bool) {
     match find_node_once(root, node) {
-        Some(path) => println!("{}", path.display()),
+        Some(path) => print_path(&path, absolute),
         None => eprintln!("warning: node not found."),
     }
 }
@@ -180,19 +219,24 @@ fn new_node(root: &Path, node: &String) {
     if node_exists(root, node) {
         eprintln!("warning: node already exists, skipping creation.");
     } else {
+        let file_name = default_file_name(root, node);
         fs::OpenOptions::new()
             .create(true)
             .write(true)
-            .open(&default_file_name(root, node))
-            // TODO: Deal with errors
-            .unwrap();
+            .open(&file_name)
+            .expect(&format!(
+                "error: failed to create node at '{}'",
+                try_relative_path(&file_name).display()
+            ));
     }
 }
 
 fn remove_node(root: &Path, node: &String) {
     if let Some(path) = find_node_once(root, node) {
-        // TODO: Deal with errors
-        fs::remove_file(path).unwrap();
+        fs::remove_file(&path).expect(&format!(
+            "error: failed to remove node at '{}'",
+            try_relative_path(&path).display()
+        ));
     } else {
         eprintln!("warning: node does not exist, skipping removal.");
     }
@@ -206,12 +250,17 @@ fn init_realm(target: &Path) {
                 ErrorKind::Io,
                 format!(
                     "target directory already within the νοῦς realm '{}'.",
-                    root.display()
+                    try_relative_path(&root).display()
                 ),
             )
             .exit();
         }
-        // TODO: Deal with errors
-        None => fs::create_dir_all(Path::new(target).join(ROOT_DIR_NAME)).unwrap(),
+        None => {
+            let rootdir = target.join(ROOT_DIR_NAME);
+            fs::create_dir_all(&rootdir).expect(&format!(
+                "error: failed to create realm root marker '{}'",
+                try_relative_path(&rootdir).display()
+            ))
+        }
     }
 }
