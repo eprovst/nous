@@ -99,7 +99,14 @@ enum Commands {
     },
 
     /// List nodes in realm
-    Ls,
+    Ls {
+        /// Print the path
+        #[arg(short, long)]
+        path: bool,
+        /// Print the absolute path
+        #[arg(short, long)]
+        absolute: bool,
+    },
 }
 
 macro_rules! error {
@@ -135,8 +142,8 @@ fn main() {
             Commands::Edit { node, editor } => edit_node(&root, &node, editor.into()),
             Commands::Touch { node } => touch_node(&root, &node),
             Commands::Path { node, absolute } => path_to_node(&root, &node, *absolute),
-            Commands::Ls => list_nodes(&root),
-            Commands::Root { absolute } => print_path(&root, *absolute),
+            Commands::Ls { path, absolute } => list_nodes(&root, *path, *absolute),
+            Commands::Root { absolute } => println_path(&root, *absolute),
             Commands::Init { root: _ } => unreachable!(),
         }
     } else {
@@ -174,7 +181,7 @@ fn try_relative_path(path: &Path) -> PathBuf {
     }
 }
 
-fn print_path(path: &Path, absolute: bool) {
+fn println_path(path: &Path, absolute: bool) {
     if absolute {
         println!("{}", try_absolute_path(path).display())
     } else {
@@ -204,13 +211,17 @@ fn realm_walker(root: &Path) -> impl Iterator<Item = PathBuf> {
         })
 }
 
-fn list_nodes(root: &Path) {
-    for path in realm_walker(root) {
-        if let Some(osstem) = path.file_stem() {
-            if let Some(stem) = osstem.to_str() {
-                println!("{}", stem);
-            } else {
-                warn!("failed to interpret name of a node as Unicode")
+fn list_nodes(root: &Path, path: bool, absolute: bool) {
+    for p in realm_walker(root) {
+        if path || absolute {
+            println_path(&p, absolute)
+        } else {
+            if let Some(osf) = p.file_stem() {
+                if let Some(f) = osf.to_str() {
+                    println!("{f}");
+                } else {
+                    warn!("failed to interpret name of a node as Unicode")
+                }
             }
         }
     }
@@ -240,13 +251,13 @@ fn find_node_once(root: &Path, node: &String, strict: bool) -> Option<PathBuf> {
 
 fn path_to_node(root: &Path, node: &String, absolute: bool) {
     match find_node_once(root, node, false) {
-        Some(path) => print_path(&path, absolute),
+        Some(path) => println_path(&path, absolute),
         None => warn!("node not found"),
     }
 }
 
 fn default_file_name(root: &Path, node: &String) -> PathBuf {
-    root.join(format!("{}.{}", node, DEFAULT_EXT))
+    root.join(format!("{node}.{DEFAULT_EXT}"))
 }
 
 fn touch_node(root: &Path, node: &String) {
