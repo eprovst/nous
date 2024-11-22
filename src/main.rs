@@ -1,7 +1,10 @@
-use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
+use clap::{
+    builder::styling::{AnsiColor, Styles},
+    Parser, Subcommand,
+};
 use pathdiff::diff_paths;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process;
 use std::time::{Duration, Instant, SystemTime};
 use std::{env, fs};
 use walkdir::{DirEntry, WalkDir};
@@ -11,9 +14,18 @@ const DEFAULT_EXT: &str = "md";
 const SUPPORTED_EXTS: [&str; 5] = ["md", "markdown", "org", "txt", "text"];
 const FALLBACK_EDITOR: &str = if cfg!(windows) { "Notepad" } else { "vi" };
 
+const CLI_STYLE: Styles = Styles::styled()
+    .header(AnsiColor::Green.on_default().bold())
+    .usage(AnsiColor::Green.on_default().bold())
+    .literal(AnsiColor::Cyan.on_default().bold())
+    .placeholder(AnsiColor::Cyan.on_default())
+    .invalid(AnsiColor::Yellow.on_default().bold())
+    .error(AnsiColor::Red.on_default().bold());
+
 #[derive(Parser)]
 #[command(name = "nous")]
 #[command(author, version, about, long_about = None)]
+#[command(styles = CLI_STYLE)]
 #[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
@@ -90,6 +102,25 @@ enum Commands {
     Ls,
 }
 
+macro_rules! error {
+    ($($arg:tt)*) => (_error(format!($($arg)*)));
+}
+
+fn _error(message: String) -> ! {
+    let style = CLI_STYLE.get_error();
+    eprintln!("{style}error:{style:#} {message}");
+    process::exit(1);
+}
+
+macro_rules! warn {
+    ($($arg:tt)*) => (_warn(format!($($arg)*)));
+}
+
+fn _warn(message: String) {
+    let style = CLI_STYLE.get_invalid();
+    eprintln!("{style}warning:{style:#} {message}");
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -109,23 +140,12 @@ fn main() {
             Commands::Init { root: _ } => unreachable!(),
         }
     } else {
-        let mut cmd = Cli::command();
-        cmd.find_subcommand_mut("init")
-            .unwrap() // we know init exists
-            .error(
-                ErrorKind::Io,
-                "not within a νοῦς realm; you could use 'init' to create one.",
-            )
-            .exit();
+        error!("not within a νοῦς realm; you could use 'init' to create one")
     }
 }
 
 fn current_dir() -> PathBuf {
-    env::current_dir().unwrap_or_else(|_| {
-        let mut cmd = Cli::command();
-        cmd.error(ErrorKind::Io, "failed to retrieve working directory.")
-            .exit()
-    })
+    env::current_dir().unwrap_or_else(|_| error!("failed to retrieve working directory"))
 }
 
 fn find_root(start_dir: &Path) -> Option<PathBuf> {
@@ -190,7 +210,7 @@ fn list_nodes(root: &Path) {
             if let Some(stem) = osstem.to_str() {
                 println!("{}", stem);
             } else {
-                eprintln!("warning: failed to interpret name of a node as Unicode.")
+                warn!("failed to interpret name of a node as Unicode")
             }
         }
     }
@@ -205,22 +225,23 @@ fn find_node(root: &Path, node: &String) -> impl Iterator<Item = PathBuf> {
     })
 }
 
-fn find_node_once(root: &Path, node: &String) -> Option<PathBuf> {
+fn find_node_once(root: &Path, node: &String, strict: bool) -> Option<PathBuf> {
     let mut matcher = find_node(root, node);
     let result = matcher.next();
     if let Some(_) = matcher.next() {
-        eprintln!(
-            "warning: multiple paths found for '{}', only using first.",
-            node
-        );
+        if strict {
+            error!("multiple paths found for '{node}'")
+        } else {
+            warn!("multiple paths found for '{node}', only using first");
+        }
     }
     result
 }
 
 fn path_to_node(root: &Path, node: &String, absolute: bool) {
-    match find_node_once(root, node) {
+    match find_node_once(root, node, false) {
         Some(path) => print_path(&path, absolute),
-        None => eprintln!("warning: node not found."),
+        None => warn!("node not found"),
     }
 }
 
@@ -229,31 +250,26 @@ fn default_file_name(root: &Path, node: &String) -> PathBuf {
 }
 
 fn touch_node(root: &Path, node: &String) {
-    let path = find_node_once(root, node).unwrap_or(default_file_name(root, node));
+    let path = find_node_once(root, node, false).unwrap_or(default_file_name(root, node));
     if path.file_name().is_some() && path.parent().map_or(true, |p| p.is_dir()) {
         let file = fs::OpenOptions::new()
             .create(true)
             .write(true)
             .open(&path)
             .unwrap_or_else(|_| {
-                let mut cmd = Cli::command();
-                cmd.error(
-                    ErrorKind::Io,
-                    format!(
-                        "failed to touch file '{}'.",
-                        try_relative_path(&path).display()
-                    ),
+                error!(
+                    "failed to touch file '{}'",
+                    try_relative_path(&path).display()
                 )
-                .exit()
             });
         let _ = file.set_modified(SystemTime::now()); // not a problem if this fails
     } else {
-        eprintln!("warning: node name results in an invalid file, skipping.")
+        warn!("node name results in an invalid file, skipping")
     }
 }
 
 fn edit_node(root: &Path, node: &String, editor: Option<&String>) {
-    let path = find_node_once(root, node).unwrap_or(default_file_name(root, node));
+    let path = find_node_once(root, node, false).unwrap_or(default_file_name(root, node));
 
     let editor = editor
         .cloned()
@@ -263,7 +279,7 @@ fn edit_node(root: &Path, node: &String, editor: Option<&String>) {
     let mut editor_args = editor.split_whitespace();
 
     let start_time = Instant::now();
-    let result = Command::new(editor_args.next().unwrap_or(FALLBACK_EDITOR))
+    let result = process::Command::new(editor_args.next().unwrap_or(FALLBACK_EDITOR))
         .args(editor_args)
         .arg(path)
         .spawn()
@@ -272,72 +288,47 @@ fn edit_node(root: &Path, node: &String, editor: Option<&String>) {
     match result {
         Ok(code) => {
             if !code.success() {
-                eprintln!("warning: editor did not exit successfully.")
+                error!("editor did not exit successfully, consider using the --editor flag")
             }
         }
         Err(_) => {
-            let mut cmd = Cli::command();
-            cmd.find_subcommand_mut("edit")
-                .unwrap() // we know edit exists
-                .error(
-                    ErrorKind::Io,
-                    format!(
-                        "failed to launch '{}', consider using the --editor flag.",
-                        editor
-                    ),
-                )
-                .exit()
+            error!("failed to launch '{editor}', consider using the --editor flag")
         }
     }
 
     if start_time.elapsed() <= Duration::from_millis(100) {
-        eprintln!("warning: editor exited under 100ms, this might indicate failure; consider using the --editor flag.")
+        warn!("editor exited under 100ms, this might indicate failure; consider using the --editor flag")
     }
 }
 
 fn remove_node(root: &Path, node: &String) {
-    if let Some(path) = find_node_once(root, node) {
+    if let Some(path) = find_node_once(root, node, true) {
         fs::remove_file(&path).unwrap_or_else(|_| {
-            let mut cmd = Cli::command();
-            cmd.error(
-                ErrorKind::Io,
-                format!(
-                    "failed to remove node at '{}'.",
-                    try_relative_path(&path).display()
-                ),
+            error!(
+                "failed to remove node at '{}'",
+                try_relative_path(&path).display()
             )
-            .exit()
         });
     } else {
-        eprintln!("warning: node does not exist, skipping removal.");
+        warn!("node does not exist, skipping removal");
     }
 }
 
 fn init_realm(target: &Path) {
     match find_root(Path::new(target)) {
         Some(root) => {
-            let mut cmd = Cli::command();
-            cmd.error(
-                ErrorKind::Io,
-                format!(
-                    "target directory already within the νοῦς realm '{}'.",
-                    try_relative_path(&root).display()
-                ),
+            error!(
+                "target directory already within the νοῦς realm '{}'",
+                try_relative_path(&root).display()
             )
-            .exit()
         }
         None => {
             let rootdir = target.join(ROOT_DIR_NAME);
             fs::create_dir_all(&rootdir).unwrap_or_else(|_| {
-                let mut cmd = Cli::command();
-                cmd.error(
-                    ErrorKind::Io,
-                    format!(
-                        "failed to create realm root marker '{}'.",
-                        try_relative_path(&rootdir).display()
-                    ),
+                error!(
+                    "failed to create realm root marker '{}'",
+                    try_relative_path(&rootdir).display()
                 )
-                .exit()
             })
         }
     }
