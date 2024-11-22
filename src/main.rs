@@ -49,6 +49,7 @@ enum Commands {
     },
 
     /// Edit a node using the default editor
+    #[command(aliases = ["ed"])]
     Edit {
         /// Node to edit
         node: String,
@@ -58,19 +59,22 @@ enum Commands {
     },
 
     /// List nodes which this node links to
-    Fl {
+    #[command(aliases = ["ln"])]
+    Links {
         /// Node to show links of
         node: String,
     },
 
     /// List nodes which link to this node
-    Bl {
+    #[command(aliases = ["bl"])]
+    Backlinks {
         /// Node to collect backlinks of
         node: String,
     },
 
     /// Rename a node, correcting backlinks
-    Mv {
+    #[command(aliases = ["mv"])]
+    Move {
         /// Old node name
         from: String,
         /// New node name
@@ -78,7 +82,8 @@ enum Commands {
     },
 
     /// Remove a node
-    Rm {
+    #[command(aliases = ["rm"])]
+    Remove {
         /// Node to remove
         node: String,
     },
@@ -99,7 +104,8 @@ enum Commands {
     },
 
     /// List nodes in realm
-    Ls {
+    #[command(visible_aliases = ["ls"])]
+    List {
         /// Print the path
         #[arg(short, long)]
         path: bool,
@@ -135,14 +141,14 @@ fn main() {
         init_realm(Path::new(root));
     } else if let Some(root) = find_root(&current_dir()) {
         match &cli.command {
-            Commands::Bl { node: _ } => todo!(),
-            Commands::Fl { node: _ } => todo!(),
-            Commands::Mv { from: _, to: _ } => todo!(),
-            Commands::Rm { node } => remove_node(&root, &node),
+            Commands::Backlinks { node: _ } => todo!(),
+            Commands::Links { node: _ } => todo!(),
+            Commands::Move { from: _, to: _ } => todo!(),
+            Commands::Remove { node } => remove_node(&root, &node),
             Commands::Edit { node, editor } => edit_node(&root, &node, editor.into()),
             Commands::Touch { node } => touch_node(&root, &node),
             Commands::Path { node, absolute } => path_to_node(&root, &node, *absolute),
-            Commands::Ls { path, absolute } => list_nodes(&root, *path, *absolute),
+            Commands::List { path, absolute } => list_nodes(&root, *path, *absolute),
             Commands::Root { absolute } => println_path(&root, *absolute),
             Commands::Init { root: _ } => unreachable!(),
         }
