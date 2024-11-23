@@ -1,13 +1,17 @@
+use crate::wikilinks::read_wikilinks;
 use clap::{
     builder::styling::{AnsiColor, Styles},
     Parser, Subcommand,
 };
 use pathdiff::diff_paths;
+use rayon::prelude::*;
+use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::process;
 use std::time::{Duration, Instant, SystemTime};
-use std::{env, fs};
+use std::{env, fs, process};
 use walkdir::{DirEntry, WalkDir};
+
+mod wikilinks;
 
 const ROOT_DIR_NAME: &str = ".nous";
 const DEFAULT_EXT: &str = "md";
@@ -26,7 +30,6 @@ const CLI_STYLE: Styles = Styles::styled()
 #[command(name = "nous")]
 #[command(author, version, about, long_about = None)]
 #[command(styles = CLI_STYLE)]
-#[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -49,7 +52,7 @@ enum Commands {
     },
 
     /// Edit a node using the default editor
-    #[command(aliases = ["ed"])]
+    #[command(visible_alias = "ed")]
     Edit {
         /// Node to edit
         node: String,
@@ -59,21 +62,33 @@ enum Commands {
     },
 
     /// List nodes which this node links to
-    #[command(aliases = ["ln"])]
+    #[command(visible_alias = "ln")]
     Links {
         /// Node to show links of
         node: String,
+        /// Print the path
+        #[arg(short, long)]
+        path: bool,
+        /// Print the absolute path
+        #[arg(short, long)]
+        absolute: bool,
     },
 
     /// List nodes which link to this node
-    #[command(aliases = ["bl"])]
+    #[command(visible_alias = "bl")]
     Backlinks {
         /// Node to collect backlinks of
         node: String,
+        /// Print the path
+        #[arg(short, long)]
+        path: bool,
+        /// Print the absolute path
+        #[arg(short, long)]
+        absolute: bool,
     },
 
     /// Rename a node, correcting backlinks
-    #[command(aliases = ["mv"])]
+    #[command(visible_alias = "mv")]
     Move {
         /// Old node name
         from: String,
@@ -82,7 +97,7 @@ enum Commands {
     },
 
     /// Remove a node
-    #[command(aliases = ["rm"])]
+    #[command(visible_alias = "rm")]
     Remove {
         /// Node to remove
         node: String,
@@ -104,7 +119,7 @@ enum Commands {
     },
 
     /// List nodes in realm
-    #[command(visible_aliases = ["ls"])]
+    #[command(visible_alias = "ls")]
     List {
         /// Print the path
         #[arg(short, long)]
@@ -139,21 +154,32 @@ fn main() {
 
     if let Commands::Init { root } = &cli.command {
         init_realm(Path::new(root));
-    } else if let Some(root) = find_root(&current_dir()) {
-        match &cli.command {
-            Commands::Backlinks { node: _ } => todo!(),
-            Commands::Links { node: _ } => todo!(),
-            Commands::Move { from: _, to: _ } => todo!(),
-            Commands::Remove { node } => remove_node(&root, &node),
-            Commands::Edit { node, editor } => edit_node(&root, &node, editor.into()),
-            Commands::Touch { node } => touch_node(&root, &node),
-            Commands::Path { node, absolute } => path_to_node(&root, &node, *absolute),
-            Commands::List { path, absolute } => list_nodes(&root, *path, *absolute),
-            Commands::Root { absolute } => println_path(&root, *absolute),
-            Commands::Init { root: _ } => unreachable!(),
-        }
-    } else {
+        return;
+    }
+
+    let Some(root) = find_root(&current_dir()) else {
         error!("not within a νοῦς realm; you could use 'init' to create one")
+    };
+
+    match &cli.command {
+        Commands::Backlinks {
+            node,
+            path,
+            absolute,
+        } => list_backlinks(&root, &node, *path, *absolute),
+        Commands::Links {
+            node,
+            path,
+            absolute,
+        } => list_links(&root, &node, *path, *absolute),
+        Commands::Move { from: _, to: _ } => todo!(),
+        Commands::Remove { node } => remove_node(&root, &node),
+        Commands::Edit { node, editor } => edit_node(&root, &node, editor.into()),
+        Commands::Touch { node } => touch_node(&root, &node),
+        Commands::Path { node, absolute } => path_to_node(&root, &node, *absolute),
+        Commands::List { path, absolute } => list_nodes(&root, *path, *absolute),
+        Commands::Root { absolute } => println_path(&root, *absolute),
+        Commands::Init { root: _ } => unreachable!(),
     }
 }
 
@@ -195,6 +221,15 @@ fn println_path(path: &Path, absolute: bool) {
     }
 }
 
+fn println_node(path: &Path) {
+    if let Some(os_file_stem) = path.file_stem() {
+        match os_file_stem.to_str() {
+            Some(file_stem) => println!("{file_stem}"),
+            None => warn!("failed to interpret name of a node as Unicode"),
+        }
+    }
+}
+
 fn realm_walker(root: &Path) -> impl Iterator<Item = PathBuf> {
     fn is_hidden(entry: &DirEntry) -> bool {
         entry
@@ -209,7 +244,7 @@ fn realm_walker(root: &Path) -> impl Iterator<Item = PathBuf> {
         .into_iter()
         .filter_entry(|e| !is_hidden(e))
         .filter_map(|e| e.ok())
-        .map(|e| e.path().to_path_buf())
+        .map(|e| e.into_path())
         .filter(|p| {
             p.extension().map_or(false, |e| {
                 SUPPORTED_EXTS.iter().any(|s| e.eq_ignore_ascii_case(s))
@@ -222,13 +257,7 @@ fn list_nodes(root: &Path, path: bool, absolute: bool) {
         if path || absolute {
             println_path(&p, absolute)
         } else {
-            if let Some(osf) = p.file_stem() {
-                if let Some(f) = osf.to_str() {
-                    println!("{f}");
-                } else {
-                    warn!("failed to interpret name of a node as Unicode")
-                }
-            }
+            println_node(&p)
         }
     }
 }
@@ -269,16 +298,12 @@ fn default_file_name(root: &Path, node: &String) -> PathBuf {
 fn touch_node(root: &Path, node: &String) {
     let path = find_node_once(root, node, false).unwrap_or(default_file_name(root, node));
     if path.file_name().is_some() && path.parent().map_or(true, |p| p.is_dir()) {
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&path)
-            .unwrap_or_else(|_| {
-                error!(
-                    "failed to touch file '{}'",
-                    try_relative_path(&path).display()
-                )
-            });
+        let Ok(file) = fs::OpenOptions::new().create(true).write(true).open(&path) else {
+            error!(
+                "failed to touch file '{}'",
+                try_relative_path(&path).display()
+            )
+        };
         let _ = file.set_modified(SystemTime::now()); // not a problem if this fails
     } else {
         warn!("node name results in an invalid file, skipping")
@@ -303,10 +328,9 @@ fn edit_node(root: &Path, node: &String, editor: Option<&String>) {
         .and_then(|mut c| c.wait());
 
     match result {
-        Ok(code) => {
-            if !code.success() {
-                error!("editor did not exit successfully, consider using the --editor flag")
-            }
+        Ok(code) if code.success() => {}
+        Ok(_code) => {
+            error!("editor did not exit successfully, consider using the --editor flag")
         }
         Err(_) => {
             error!("failed to launch '{editor}', consider using the --editor flag")
@@ -319,15 +343,14 @@ fn edit_node(root: &Path, node: &String, editor: Option<&String>) {
 }
 
 fn remove_node(root: &Path, node: &String) {
-    if let Some(path) = find_node_once(root, node, true) {
-        fs::remove_file(&path).unwrap_or_else(|_| {
+    match find_node_once(root, node, true) {
+        Some(path) => fs::remove_file(&path).unwrap_or_else(|_| {
             error!(
                 "failed to remove node at '{}'",
                 try_relative_path(&path).display()
             )
-        });
-    } else {
-        warn!("node does not exist, skipping removal");
+        }),
+        None => warn!("node does not exist, skipping removal"),
     }
 }
 
@@ -349,4 +372,39 @@ fn init_realm(target: &Path) {
             })
         }
     }
+}
+
+fn list_links(root: &Path, node: &String, path: bool, absolute: bool) {
+    if let Some(node_path) = find_node_once(root, node, false) {
+        let Ok(mut f) = File::open(node_path) else {
+            error!("failed to open file of '{node}'")
+        };
+        for (_, link) in read_wikilinks(&mut f) {
+            if absolute || path {
+                match find_node_once(root, &link, false) {
+                    Some(path) => println_path(&path, absolute),
+                    None => warn!("no file found for '{link}'"),
+                }
+            } else {
+                println!("{link}")
+            }
+        }
+    }
+}
+
+fn list_backlinks(root: &Path, node: &String, path: bool, absolute: bool) {
+    realm_walker(root)
+        .par_bridge()
+        .filter(|p| {
+            File::open(p).is_ok_and(|mut f| {
+                read_wikilinks(&mut f).any(|(_, l)| node.eq_ignore_ascii_case(&l))
+            })
+        })
+        .for_each(|bl| {
+            if absolute || path {
+                println_path(&bl, absolute)
+            } else {
+                println_node(&bl)
+            }
+        });
 }

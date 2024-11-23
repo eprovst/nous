@@ -7,6 +7,8 @@ repository = "https://github.com/eprovst/nous"
 edition = "2021"
 
 [dependencies]
-clap = { version = "4.5.21", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+memchr = "2"
+pathdiff = "0.2"
+rayon = "1"
 walkdir = "2"
-pathdiff = "0.2.2"
