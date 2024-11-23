@@ -1,20 +1,20 @@
 use memchr;
-use std::io::{BufRead, BufReader, Error, ErrorKind, Read, Result, Seek};
+use std::{io, string};
 
 // Skips r to right after [[ and returns the position at which this tag is found
-fn skip_to_opening_tag<R: BufRead + Seek>(r: &mut R) -> Result<u64> {
+fn skip_to_opening_tag<R: io::BufRead + io::Seek>(r: &mut R) -> io::Result<u64> {
     let mut stage_two = false;
     loop {
         let (on_chr, used) = {
             let available = match r.fill_buf() {
                 Ok(n) => n,
-                Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e),
             };
             match memchr::memchr(b'[', available) {
                 Some(i) => (true, i + 1),
                 None if available.len() == 0 => {
-                    return Err(Error::from(ErrorKind::UnexpectedEof));
+                    return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
                 }
                 None => (false, available.len()),
             }
@@ -27,23 +27,34 @@ fn skip_to_opening_tag<R: BufRead + Seek>(r: &mut R) -> Result<u64> {
     }
 }
 
-pub fn next_wikilink<R: BufRead + Seek>(r: &mut R) -> Option<(u64, String)> {
-    let idx = skip_to_opening_tag(r).ok()?;
+// Skips r to right after ]] and returns the bytes read upto this tag
+pub fn read_to_closing_tag<R: io::BufRead>(r: &mut R) -> io::Result<Vec<u8>> {
     let mut buf = vec![];
+    r.read_until(b']', &mut buf)?;
     loop {
-        r.read_until(b']', &mut buf).ok()?;
-        let read = r.read_until(b']', &mut buf).ok()?;
+        let read = r.read_until(b']', &mut buf)?;
         if read == 1 {
             break;
+        } else if read == 0 {
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
         }
     }
     buf.pop();
     buf.pop();
-    let mut link = String::from_utf8(buf).ok()?;
-    if let Some(idx) = link.find(|c| c == '|' || c == '#') {
-        link.truncate(idx)
+    Ok(buf)
+}
+
+fn extract_link_target(mut buf: Vec<u8>) -> Result<String, string::FromUtf8Error> {
+    if let Some(idx) = memchr::memchr2(b'|', b'#', &buf) {
+        buf.truncate(idx)
     }
-    Some((idx, link.trim_ascii().to_string()))
+    String::from_utf8(buf.trim_ascii().to_vec())
+}
+
+pub fn next_wikilink<R: io::BufRead + io::Seek>(r: &mut R) -> Option<(u64, String)> {
+    let idx = skip_to_opening_tag(r).ok()?;
+    let buf = read_to_closing_tag(r).ok()?;
+    extract_link_target(buf).map(|t| (idx, t)).ok()
 }
 
 #[derive(Debug)]
@@ -51,7 +62,7 @@ struct WikilinksIter<B> {
     buf: B,
 }
 
-impl<B: BufRead + Seek> Iterator for WikilinksIter<B> {
+impl<B: io::BufRead + io::Seek> Iterator for WikilinksIter<B> {
     type Item = (u64, String);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -59,7 +70,7 @@ impl<B: BufRead + Seek> Iterator for WikilinksIter<B> {
     }
 }
 
-pub fn read_wikilinks<R: Read + Seek>(reader: R) -> impl Iterator<Item = (u64, String)> {
-    let buf = BufReader::with_capacity(64 * 1024, reader);
+pub fn read_wikilinks<R: io::Read + io::Seek>(reader: R) -> impl Iterator<Item = (u64, String)> {
+    let buf = io::BufReader::with_capacity(64 * 1024, reader);
     WikilinksIter { buf }
 }
