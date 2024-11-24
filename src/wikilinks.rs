@@ -52,9 +52,16 @@ fn extract_link_target(mut buf: Vec<u8>) -> Result<String, string::FromUtf8Error
 }
 
 pub fn next_wikilink<R: io::BufRead + io::Seek>(r: &mut R) -> Option<(u64, String)> {
-    let idx = skip_to_opening_tag(r).ok()?;
-    let buf = read_to_closing_tag(r).ok()?;
-    extract_link_target(buf).map(|t| (idx, t)).ok()
+    // Keep going until we find a link which is not internal, or an error occurs
+    loop {
+        let idx = skip_to_opening_tag(r).ok()?;
+        let buf = read_to_closing_tag(r).ok()?;
+        let tgt = extract_link_target(buf).ok()?;
+        if !tgt.is_empty() {
+            // Not an internal link, done
+            return Some((idx, tgt));
+        }
+    }
 }
 
 #[derive(Debug)]
