@@ -3,7 +3,11 @@ use crate::config::{
 };
 use crate::wikilinks::read_wikilinks;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueHint};
+use clap_complete::{
+    engine::{ArgValueCandidates, CompletionCandidate},
+    env::CompleteEnv,
+};
 use pathdiff;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use std::collections::BTreeSet;
@@ -17,8 +21,8 @@ mod error_macros;
 mod wikilinks;
 
 #[derive(Parser)]
-#[command(name = "nous")]
-#[command(author, version, about, long_about = None)]
+#[command(name = "nous", author, version)]
+#[command(about, long_about = None)]
 #[command(styles = CLI_STYLE)]
 struct Cli {
     #[command(subcommand)]
@@ -31,6 +35,7 @@ enum Commands {
     Init {
         /// Directory to initialize as a realm
         #[arg(default_value = ".")]
+        #[arg(value_hint = ValueHint::DirPath)]
         root: String,
     },
 
@@ -45,9 +50,11 @@ enum Commands {
     #[command(visible_alias = "o")]
     Open {
         /// Node to page
+        #[arg(add = ArgValueCandidates::new(node_candidates))]
         node: String,
         /// Alternative pager to use
         #[arg(short, long)]
+        #[arg(value_hint = ValueHint::ExecutablePath)]
         pager: Option<String>,
     },
 
@@ -55,9 +62,11 @@ enum Commands {
     #[command(visible_alias = "ed")]
     Edit {
         /// Node to edit
+        #[arg(add = ArgValueCandidates::new(node_candidates))]
         node: String,
         /// Alternative editor to use
         #[arg(short, long)]
+        #[arg(value_hint = ValueHint::ExecutablePath)]
         editor: Option<String>,
     },
 
@@ -65,6 +74,7 @@ enum Commands {
     #[command(visible_alias = "fl")]
     Forwardlinks {
         /// Node to show links of
+        #[arg(add = ArgValueCandidates::new(node_candidates))]
         node: String,
         /// Print the path
         #[arg(short, long)]
@@ -78,6 +88,7 @@ enum Commands {
     #[command(visible_alias = "bl")]
     Backlinks {
         /// Node to collect backlinks of
+        #[arg(add = ArgValueCandidates::new(node_candidates))]
         node: String,
         /// Print the path
         #[arg(short, long)]
@@ -91,6 +102,7 @@ enum Commands {
     #[command(visible_alias = "ln")]
     Links {
         /// Node to show links of
+        #[arg(add = ArgValueCandidates::new(node_candidates))]
         node: String,
         /// Print the path
         #[arg(short, long)]
@@ -104,8 +116,10 @@ enum Commands {
     #[command(visible_alias = "mv")]
     Move {
         /// Old node name
+        #[arg(add = ArgValueCandidates::new(node_candidates))]
         from: String,
         /// New node name
+        #[arg(value_hint = ValueHint::Other)]
         to: String,
     },
 
@@ -113,18 +127,21 @@ enum Commands {
     #[command(visible_alias = "rm")]
     Remove {
         /// Node to remove
+        #[arg(add = ArgValueCandidates::new(node_candidates))]
         node: String,
     },
 
     /// Touch the file of a (new) node
     Touch {
         /// Name of (new) node to touch
+        #[arg(add = ArgValueCandidates::new(node_candidates))]
         node: String,
     },
 
     /// Show file path of a node
     Path {
         /// Node to show path of
+        #[arg(add = ArgValueCandidates::new(node_candidates))]
         node: String,
         /// Print the absolute path
         #[arg(short, long)]
@@ -144,6 +161,8 @@ enum Commands {
 }
 
 fn main() {
+    CompleteEnv::with_factory(|| Cli::command()).complete();
+
     let cli = Cli::parse();
 
     if let Commands::Init { root } = &cli.command {
@@ -180,6 +199,16 @@ fn main() {
         Commands::List { path, absolute } => list_nodes(&root, *path, *absolute),
         Commands::Root { absolute } => println_path(&root, *absolute),
         Commands::Init { root: _ } => unreachable!(),
+    }
+}
+
+fn node_candidates() -> Vec<CompletionCandidate> {
+    if let Some(root) = find_root(&current_dir()) {
+        realm_walker(&root)
+            .filter_map(|p| p.file_stem().map(CompletionCandidate::new))
+            .collect()
+    } else {
+        vec![]
     }
 }
 

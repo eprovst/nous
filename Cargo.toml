@@ -8,6 +8,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+clap_complete = { version = "4", features = ["unstable-dynamic"] }
 memchr = "2"
 pathdiff = "0.2"
 rayon = "1"
