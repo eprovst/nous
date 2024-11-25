@@ -344,7 +344,7 @@ fn open_node(root: &Path, node: &String, pager: Option<&String>) {
     match result {
         Ok(code) if code.success() => {}
         Ok(_code) => {
-            error!("pager did not exit successfully, consider using the --editor flag")
+            error!("pager did not exit successfully, consider using the --pager flag")
         }
         Err(_) => {
             error!("failed to launch '{pager}', consider using the --pager flag")
