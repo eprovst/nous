@@ -20,7 +20,7 @@ fn skip_to_opening_tag<R: io::BufRead + io::Seek>(r: &mut R) -> io::Result<u64> 
             }
         };
         r.consume(used);
-        if stage_two && used == 1 {
+        if stage_two && on_chr && used == 1 {
             return r.stream_position().map(|p| p - 2);
         }
         stage_two = on_chr;
